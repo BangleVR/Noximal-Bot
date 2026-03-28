@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fetch = require('node-fetch');
 const http = require('http');
+
 http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 const TITLE_ID = process.env.PLAYFAB_TITLE_ID;
@@ -51,6 +52,9 @@ const BAN_DURATIONS = {
 client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder()
+            .setName('ping')
+            .setDescription('Check the bots response time'),
+        new SlashCommandBuilder()
             .setName('user')
             .setDescription('Look up a player by their short code')
             .addStringOption(opt =>
@@ -76,6 +80,13 @@ client.once('ready', async () => {
             .addStringOption(opt =>
                 opt.setName('message')
                     .setDescription('The message to display in game')
+                    .setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('announcement')
+            .setDescription('Send an in-game announcement')
+            .addStringOption(opt =>
+                opt.setName('message')
+                    .setDescription('The announcement to display in game')
                     .setRequired(true)),
         new SlashCommandBuilder()
             .setName('report')
@@ -118,13 +129,6 @@ client.once('ready', async () => {
             .addIntegerOption(opt =>
                 opt.setName('amount')
                     .setDescription('Amount of coins to give')
-                    .setRequired(true)),
-        new SlashCommandBuilder()
-            .setName('announcement')
-            .setDescription('Send an in-game announcement')
-            .addStringOption(opt =>
-                opt.setName('message')
-                    .setDescription('The announcement to display in game')
                     .setRequired(true))
     ].map(cmd => cmd.toJSON());
 
@@ -135,6 +139,13 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
+
+    // /ping
+    if (interaction.isChatInputCommand() && interaction.commandName === 'ping') {
+        const sent = await interaction.deferReply({ fetchReply: true });
+        const latency = sent.createdTimestamp - interaction.createdTimestamp;
+        await interaction.editReply(`🏓 Pong! **${latency}ms**`);
+    }
 
     // /user
     if (interaction.isChatInputCommand() && interaction.commandName === 'user') {
@@ -314,25 +325,21 @@ client.on('interactionCreate', async interaction => {
         try {
             const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'GetLeaderboard', {});
             const board = result.leaderboard;
-
             if (!board || board.length === 0) {
                 await interaction.editReply('❌ No leaderboard data yet!');
                 return;
             }
-
             const medals = ['🥇', '🥈', '🥉'];
             const rows = board.map((entry, i) => {
                 const medal = medals[i] || `**#${i + 1}**`;
                 return `${medal} **${entry.DisplayName || 'Unknown'}** — ${entry.StatValue.toLocaleString()} clicks`;
             }).join('\n');
-
             const embed = new EmbedBuilder()
                 .setTitle('🏆 Click Leaderboard')
                 .setColor(0xFFD700)
                 .setDescription(rows)
                 .setTimestamp()
                 .setFooter({ text: 'Top 10 players by click count' });
-
             await interaction.editReply({ embeds: [embed] });
         } catch (err) {
             console.error(err);
@@ -350,11 +357,8 @@ client.on('interactionCreate', async interaction => {
                 await interaction.editReply('❌ No player found with that code.');
                 return;
             }
-
             const profile = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'GetPlayerProfile', { playFabId: lookup.playFabId });
-
             const joinDate = new Date(profile.created).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-
             const embed = new EmbedBuilder()
                 .setTitle(`👤 ${profile.displayName || 'Unknown'}`)
                 .setColor(0x5865F2)
@@ -365,7 +369,6 @@ client.on('interactionCreate', async interaction => {
                     { name: '📅 Joined', value: joinDate, inline: true }
                 )
                 .setTimestamp();
-
             await interaction.editReply({ embeds: [embed] });
         } catch (err) {
             console.error(err);
@@ -390,9 +393,7 @@ client.on('interactionCreate', async interaction => {
                 await interaction.editReply('❌ No player found with that code.');
                 return;
             }
-
             await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'GiveCoins', { playFabId: lookup.playFabId, amount });
-
             const embed = new EmbedBuilder()
                 .setTitle('🪙 Coins Given!')
                 .setColor(0xFFD700)
@@ -402,7 +403,6 @@ client.on('interactionCreate', async interaction => {
                     { name: '🛡️ Given By', value: `<@${interaction.user.id}>`, inline: true }
                 )
                 .setTimestamp();
-
             await interaction.editReply({ embeds: [embed] });
         } catch (err) {
             console.error(err);
@@ -432,7 +432,6 @@ client.on('interactionCreate', async interaction => {
         const modal = new ModalBuilder()
             .setCustomId(`report_modal_${selectedReason}`)
             .setTitle(`Report: ${selectedReason}`);
-
         const shortCodeInput = new TextInputBuilder()
             .setCustomId('short_code')
             .setLabel('Player\'s 6 digit ID (shown under their name)')
@@ -441,21 +440,18 @@ client.on('interactionCreate', async interaction => {
             .setMinLength(6)
             .setMaxLength(6)
             .setRequired(true);
-
         const detailsInput = new TextInputBuilder()
             .setCustomId('details')
             .setLabel('Describe what happened')
             .setStyle(TextInputStyle.Paragraph)
             .setPlaceholder('Please describe the situation in detail...')
             .setRequired(true);
-
         const additionalInput = new TextInputBuilder()
             .setCustomId('additional')
             .setLabel('Additional Info (optional)')
             .setStyle(TextInputStyle.Paragraph)
             .setPlaceholder('Any extra info, timestamps, witnesses etc...')
             .setRequired(false);
-
         modal.addComponents(
             new ActionRowBuilder().addComponents(shortCodeInput),
             new ActionRowBuilder().addComponents(detailsInput),
@@ -470,16 +466,13 @@ client.on('interactionCreate', async interaction => {
         const shortCode = interaction.fields.getTextInputValue('short_code').trim().toUpperCase();
         const details = interaction.fields.getTextInputValue('details');
         const additional = interaction.fields.getTextInputValue('additional') || 'None provided';
-
         await interaction.deferReply({ flags: 64 });
-
         try {
             const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LookupByShortCode', { shortCode });
             if (!result.found) {
                 await interaction.editReply('❌ That ID code is invalid. Make sure you copied the 6 digit yellow code shown under their name!');
                 return;
             }
-
             const reportChannel = await client.channels.fetch(REPORT_CHANNEL_ID);
             const embed = new EmbedBuilder()
                 .setTitle('🚨 New Player Report')
@@ -495,7 +488,6 @@ client.on('interactionCreate', async interaction => {
                 )
                 .setTimestamp()
                 .setFooter({ text: `Report submitted by ${interaction.user.tag}` });
-
             await reportChannel.send({ embeds: [embed] });
             await interaction.editReply('✅ Your report has been submitted! Our moderation team will review it shortly.');
         } catch (err) {
