@@ -37,6 +37,15 @@ async function callCloudScript(playFabId, functionName, params) {
     return data.data.FunctionResult;
 }
 
+const BAN_DURATIONS = {
+    '1h': { hours: 1, label: '1 Hour' },
+    '1d': { hours: 24, label: '1 Day' },
+    '1w': { hours: 168, label: '1 Week' },
+    '1m': { hours: 720, label: '1 Month' },
+    '1y': { hours: 8760, label: '1 Year' },
+    'perm': { hours: null, label: 'Permanent' }
+};
+
 client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder()
@@ -44,7 +53,7 @@ client.once('ready', async () => {
             .setDescription('Look up a player by their short code')
             .addStringOption(opt =>
                 opt.setName('code')
-                    .setDescription('The 5 character player code e.g. AB992')
+                    .setDescription('The 6 character player code')
                     .setRequired(true)),
         new SlashCommandBuilder()
             .setName('link')
@@ -73,8 +82,8 @@ client.once('ready', async () => {
             .setName('ban')
             .setDescription('Ban a player from the game')
             .addStringOption(opt =>
-                opt.setName('playfabid')
-                    .setDescription('The PlayFab ID of the player to ban')
+                opt.setName('shortcode')
+                    .setDescription('The 6 digit code shown under the players name in game')
                     .setRequired(true))
             .addStringOption(opt =>
                 opt.setName('reason')
@@ -84,8 +93,8 @@ client.once('ready', async () => {
             .setName('unban')
             .setDescription('Unban a player from the game')
             .addStringOption(opt =>
-                opt.setName('playfabid')
-                    .setDescription('The PlayFab ID of the player to unban')
+                opt.setName('shortcode')
+                    .setDescription('The 6 digit code shown under the players name in game')
                     .setRequired(true))
     ].map(cmd => cmd.toJSON());
 
@@ -97,7 +106,7 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async interaction => {
 
-    // /user command
+    // /user
     if (interaction.isChatInputCommand() && interaction.commandName === 'user') {
         const adminRoleIds = process.env.ADMIN_ROLE_IDS.split(',');
         const hasRole = adminRoleIds.some(roleId => interaction.member.roles.cache.has(roleId));
@@ -105,10 +114,8 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
             return;
         }
-
         const code = interaction.options.getString('code').toUpperCase();
         await interaction.deferReply();
-
         try {
             const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LookupByShortCode', { shortCode: code });
             if (result.found) {
@@ -127,41 +134,31 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /link command
+    // /link
     if (interaction.isChatInputCommand() && interaction.commandName === 'link') {
         const playFabId = interaction.options.getString('playfabid').trim();
         await interaction.deferReply({ ephemeral: true });
-
         try {
             const validate = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'ValidatePlayFabId', { playFabId });
             if (!validate.valid) {
                 await interaction.editReply('❌ That PlayFab ID does not exist. Please check and try again.');
                 return;
             }
-
-            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LinkDiscord', {
-                discordId: interaction.user.id,
-                playFabId
-            });
-
-            await interaction.editReply(`✅ Your PlayFab account has been linked as **${validate.displayName || playFabId}**! Use **/click** to check your count!`);
+            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LinkDiscord', { discordId: interaction.user.id, playFabId });
+            await interaction.editReply(`✅ Linked as **${validate.displayName || playFabId}**! Use **/click** to check your count!`);
         } catch (err) {
             console.error(err);
-            await interaction.editReply('❌ Something went wrong while linking your account.');
+            await interaction.editReply('❌ Something went wrong.');
         }
     }
 
-    // /unlink command
+    // /unlink
     if (interaction.isChatInputCommand() && interaction.commandName === 'unlink') {
         await interaction.deferReply({ ephemeral: true });
-
         try {
-            const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'UnlinkDiscord', {
-                discordId: interaction.user.id
-            });
-
+            const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'UnlinkDiscord', { discordId: interaction.user.id });
             if (result.success) {
-                await interaction.editReply('✅ Your PlayFab account has been unlinked. Use **/link** to link a new one!');
+                await interaction.editReply('✅ Your PlayFab account has been unlinked!');
             } else {
                 await interaction.editReply('❌ You don\'t have a linked account to unlink!');
             }
@@ -171,13 +168,12 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /click command
+    // /click
     if (interaction.isChatInputCommand() && interaction.commandName === 'click') {
         if (interaction.channelId !== CLICK_CHANNEL_ID) {
             await interaction.reply({ content: `❌ This command can only be used in <#${CLICK_CHANNEL_ID}>!`, ephemeral: true });
             return;
         }
-
         const now = Date.now();
         const cooldownAmount = 10 * 1000;
         if (cooldowns.has(interaction.user.id)) {
@@ -190,27 +186,20 @@ client.on('interactionCreate', async interaction => {
         }
         cooldowns.set(interaction.user.id, now + cooldownAmount);
         await interaction.deferReply();
-
         try {
             const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'GetClickCount', { discordId: interaction.user.id });
-
             if (!result.found) {
                 await interaction.editReply('❌ You have not linked your PlayFab account yet! Use **/link <your PlayFab ID>** first.');
                 return;
             }
-
             const count = result.clickCount;
             const goal = 100000;
             const progress = Math.min(count / goal * 100, 100).toFixed(1);
             const progressBar = generateProgressBar(count, goal);
-
             if (count >= goal) {
                 const member = interaction.member;
-                if (!member.roles.cache.has(CLICKER_ROLE_ID)) {
-                    await member.roles.add(CLICKER_ROLE_ID);
-                }
+                if (!member.roles.cache.has(CLICKER_ROLE_ID)) await member.roles.add(CLICKER_ROLE_ID);
             }
-
             const embed = new EmbedBuilder()
                 .setTitle('🖱️ Clicker Stats')
                 .setColor(count >= goal ? 0xFFD700 : 0x5865F2)
@@ -220,7 +209,6 @@ client.on('interactionCreate', async interaction => {
                     { name: 'Progress', value: `${progressBar} **${progress}%**` }
                 )
                 .setFooter({ text: count >= goal ? '🎉 You earned the 100,000 Clicker role!' : `${(goal - count).toLocaleString()} clicks to go!` });
-
             await interaction.editReply({ embeds: [embed] });
         } catch (err) {
             console.error(err);
@@ -228,7 +216,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /motd command
+    // /motd
     if (interaction.isChatInputCommand() && interaction.commandName === 'motd') {
         const adminRoleIds = process.env.ADMIN_ROLE_IDS.split(',');
         const hasRole = adminRoleIds.some(roleId => interaction.member.roles.cache.has(roleId));
@@ -236,10 +224,8 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
             return;
         }
-
         const message = interaction.options.getString('message');
         await interaction.deferReply();
-
         try {
             const response = await fetch(
                 `https://${TITLE_ID}.playfabapi.com/Server/SetTitleData`,
@@ -261,7 +247,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // /report command - show dropdown
+    // /report - show dropdown
     if (interaction.isChatInputCommand() && interaction.commandName === 'report') {
         const row = new ActionRowBuilder().addComponents(
             new StringSelectMenuBuilder()
@@ -274,23 +260,23 @@ client.on('interactionCreate', async interaction => {
                     { label: 'Other', description: 'Something else', value: 'Other', emoji: '❓' }
                 ])
         );
-
         await interaction.reply({ content: '📋 **What are you reporting this player for?**', components: [row], ephemeral: true });
     }
 
-    // Handle report dropdown selection
+    // Report dropdown selected
     if (interaction.isStringSelectMenu() && interaction.customId === 'report_type') {
         const selectedReason = interaction.values[0];
-
         const modal = new ModalBuilder()
             .setCustomId(`report_modal_${selectedReason}`)
             .setTitle(`Report: ${selectedReason}`);
 
-        const playerIdInput = new TextInputBuilder()
-            .setCustomId('player_id')
-            .setLabel('Player\'s PlayFab ID')
+        const shortCodeInput = new TextInputBuilder()
+            .setCustomId('short_code')
+            .setLabel('Player\'s 6 digit ID (shown under their name)')
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder('e.g. 94433A81838E4036')
+            .setPlaceholder('e.g. 8E4036')
+            .setMinLength(6)
+            .setMaxLength(6)
             .setRequired(true);
 
         const detailsInput = new TextInputBuilder()
@@ -308,33 +294,31 @@ client.on('interactionCreate', async interaction => {
             .setRequired(false);
 
         modal.addComponents(
-            new ActionRowBuilder().addComponents(playerIdInput),
+            new ActionRowBuilder().addComponents(shortCodeInput),
             new ActionRowBuilder().addComponents(detailsInput),
             new ActionRowBuilder().addComponents(additionalInput)
         );
-
         await interaction.showModal(modal);
     }
 
-    // Handle report modal submission
+    // Report modal submitted
     if (interaction.isModalSubmit() && interaction.customId.startsWith('report_modal_')) {
         const reason = interaction.customId.replace('report_modal_', '');
-        const playFabId = interaction.fields.getTextInputValue('player_id').trim();
+        const shortCode = interaction.fields.getTextInputValue('short_code').trim().toUpperCase();
         const details = interaction.fields.getTextInputValue('details');
         const additional = interaction.fields.getTextInputValue('additional') || 'None provided';
 
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            // Validate the PlayFab ID
-            const validate = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'ValidatePlayFabId', { playFabId });
+            // Validate short code
+            const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LookupByShortCode', { shortCode });
 
-            if (!validate.valid) {
-                await interaction.editReply('❌ That PlayFab ID does not exist. Please double check the ID and try again.');
+            if (!result.found) {
+                await interaction.editReply('❌ That ID code is invalid. Make sure you copied the 6 digit yellow code shown under their name!');
                 return;
             }
 
-            // Send report to report channel
             const reportChannel = await client.channels.fetch(REPORT_CHANNEL_ID);
 
             const embed = new EmbedBuilder()
@@ -343,8 +327,9 @@ client.on('interactionCreate', async interaction => {
                 .addFields(
                     { name: '📋 Reason', value: reason, inline: true },
                     { name: '👤 Reported By', value: `<@${interaction.user.id}>`, inline: true },
-                    { name: '🎮 Reported Player', value: validate.displayName || 'Unknown', inline: true },
-                    { name: '🔑 PlayFab ID', value: `\`${playFabId}\``, inline: true },
+                    { name: '🎮 Reported Player', value: result.displayName || 'Unknown', inline: true },
+                    { name: '🔑 Short Code', value: `\`${shortCode}\``, inline: true },
+                    { name: '🆔 PlayFab ID', value: `\`${result.playFabId}\``, inline: true },
                     { name: '📝 Details', value: details },
                     { name: 'ℹ️ Additional Info', value: additional }
                 )
@@ -353,14 +338,13 @@ client.on('interactionCreate', async interaction => {
 
             await reportChannel.send({ embeds: [embed] });
             await interaction.editReply('✅ Your report has been submitted! Our moderation team will review it shortly.');
-
         } catch (err) {
             console.error(err);
             await interaction.editReply('❌ Something went wrong while submitting your report.');
         }
     }
 
-    // /ban command
+    // /ban - show duration dropdown
     if (interaction.isChatInputCommand() && interaction.commandName === 'ban') {
         const hasBanRole = BAN_ALLOWED_ROLES.some(roleId => interaction.member.roles.cache.has(roleId));
         if (!hasBanRole) {
@@ -368,38 +352,70 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
-        const playFabId = interaction.options.getString('playfabid').trim();
+        const shortCode = interaction.options.getString('shortcode').trim().toUpperCase();
         const reason = interaction.options.getString('reason');
-        await interaction.deferReply();
+
+        const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId(`ban_duration_${shortCode}_${encodeURIComponent(reason)}`)
+                .setPlaceholder('Select ban duration...')
+                .addOptions([
+                    { label: '1 Hour', value: '1h', emoji: '⏰' },
+                    { label: '1 Day', value: '1d', emoji: '📅' },
+                    { label: '1 Week', value: '1w', emoji: '🗓️' },
+                    { label: '1 Month', value: '1m', emoji: '📆' },
+                    { label: '1 Year', value: '1y', emoji: '🗃️' },
+                    { label: 'Permanent', value: 'perm', emoji: '🔨' }
+                ])
+        );
+
+        await interaction.reply({ content: `⏱️ **Select ban duration for \`${shortCode}\`:**`, components: [row], ephemeral: true });
+    }
+
+    // Ban duration selected
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('ban_duration_')) {
+        const parts = interaction.customId.replace('ban_duration_', '').split('_');
+        const shortCode = parts[0];
+        const reason = decodeURIComponent(parts.slice(1).join('_'));
+        const durationKey = interaction.values[0];
+        const duration = BAN_DURATIONS[durationKey];
+
+        await interaction.deferUpdate();
 
         try {
-            const validate = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'ValidatePlayFabId', { playFabId });
-            if (!validate.valid) {
-                await interaction.editReply('❌ That PlayFab ID does not exist.');
+            const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LookupByShortCode', { shortCode });
+
+            if (!result.found) {
+                await interaction.editReply({ content: '❌ That short code does not exist.', components: [] });
                 return;
             }
 
-            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'BanPlayer', { playFabId, reason });
+            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'BanPlayer', {
+                playFabId: result.playFabId,
+                reason,
+                durationInHours: duration.hours
+            });
 
             const embed = new EmbedBuilder()
                 .setTitle('🔨 Player Banned')
                 .setColor(0xFF0000)
                 .addFields(
-                    { name: '👤 Player', value: validate.displayName || 'Unknown', inline: true },
-                    { name: '🔑 PlayFab ID', value: `\`${playFabId}\``, inline: true },
+                    { name: '👤 Player', value: result.displayName || 'Unknown', inline: true },
+                    { name: '🔑 Short Code', value: `\`${shortCode}\``, inline: true },
+                    { name: '⏱️ Duration', value: duration.label, inline: true },
                     { name: '📋 Reason', value: reason },
                     { name: '🛡️ Banned By', value: `<@${interaction.user.id}>` }
                 )
                 .setTimestamp();
 
-            await interaction.editReply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed], components: [] });
         } catch (err) {
             console.error(err);
-            await interaction.editReply('❌ Something went wrong while banning the player.');
+            await interaction.editReply({ content: '❌ Something went wrong while banning the player.', components: [] });
         }
     }
 
-    // /unban command
+    // /unban
     if (interaction.isChatInputCommand() && interaction.commandName === 'unban') {
         const hasBanRole = BAN_ALLOWED_ROLES.some(roleId => interaction.member.roles.cache.has(roleId));
         if (!hasBanRole) {
@@ -407,24 +423,25 @@ client.on('interactionCreate', async interaction => {
             return;
         }
 
-        const playFabId = interaction.options.getString('playfabid').trim();
+        const shortCode = interaction.options.getString('shortcode').trim().toUpperCase();
         await interaction.deferReply();
 
         try {
-            const validate = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'ValidatePlayFabId', { playFabId });
-            if (!validate.valid) {
-                await interaction.editReply('❌ That PlayFab ID does not exist.');
+            const result = await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'LookupByShortCode', { shortCode });
+
+            if (!result.found) {
+                await interaction.editReply('❌ That short code does not exist.');
                 return;
             }
 
-            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'UnbanPlayer', { playFabId });
+            await callCloudScript(process.env.PLAYFAB_ADMIN_ID, 'UnbanPlayer', { playFabId: result.playFabId });
 
             const embed = new EmbedBuilder()
                 .setTitle('✅ Player Unbanned')
                 .setColor(0x00FF00)
                 .addFields(
-                    { name: '👤 Player', value: validate.displayName || 'Unknown', inline: true },
-                    { name: '🔑 PlayFab ID', value: `\`${playFabId}\``, inline: true },
+                    { name: '👤 Player', value: result.displayName || 'Unknown', inline: true },
+                    { name: '🔑 Short Code', value: `\`${shortCode}\``, inline: true },
                     { name: '🛡️ Unbanned By', value: `<@${interaction.user.id}>` }
                 )
                 .setTimestamp();
