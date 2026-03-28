@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const fetch = require('node-fetch');
+const http = require('http');
+http.createServer((req, res) => res.end('Bot is alive!')).listen(process.env.PORT || 3000);
 
 const TITLE_ID = process.env.PLAYFAB_TITLE_ID;
 const SECRET_KEY = process.env.PLAYFAB_SECRET_KEY;
