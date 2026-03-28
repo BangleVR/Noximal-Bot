@@ -5,6 +5,9 @@ const fetch = require('node-fetch');
 const TITLE_ID = process.env.PLAYFAB_TITLE_ID;
 const SECRET_KEY = process.env.PLAYFAB_SECRET_KEY;
 const CLICKER_ROLE_ID = '1485379012019748997';
+const CLICK_CHANNEL_ID = '1474902393844924434';
+
+const cooldowns = new Map();
 
 const client = new Client({ intents: [
     GatewayIntentBits.Guilds,
@@ -50,7 +53,14 @@ client.once('ready', async () => {
                     .setRequired(true)),
         new SlashCommandBuilder()
             .setName('click')
-            .setDescription('Check your click count and progress to 100,000!')
+            .setDescription('Check your click count and progress to 100,000!'),
+        new SlashCommandBuilder()
+            .setName('motd')
+            .setDescription('Set the in-game Message of the Day')
+            .addStringOption(opt =>
+                opt.setName('message')
+                    .setDescription('The message to display in game')
+                    .setRequired(true))
     ].map(cmd => cmd.toJSON());
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -113,6 +123,32 @@ client.on('interactionCreate', async interaction => {
 
     // /click command
     if (interaction.commandName === 'click') {
+
+        // Channel restriction
+        if (interaction.channelId !== CLICK_CHANNEL_ID) {
+            await interaction.reply({ 
+                content: `❌ This command can only be used in <#${CLICK_CHANNEL_ID}>!`, 
+                ephemeral: true 
+            });
+            return;
+        }
+
+        // Cooldown check
+        const now = Date.now();
+        const cooldownAmount = 10 * 1000; // 10 seconds
+        if (cooldowns.has(interaction.user.id)) {
+            const expiresAt = cooldowns.get(interaction.user.id);
+            if (now < expiresAt) {
+                const secondsLeft = ((expiresAt - now) / 1000).toFixed(1);
+                await interaction.reply({ 
+                    content: `⏳ Please wait **${secondsLeft}s** before using /click again!`, 
+                    ephemeral: true 
+                });
+                return;
+            }
+        }
+        cooldowns.set(interaction.user.id, now + cooldownAmount);
+
         await interaction.deferReply();
 
         try {
@@ -150,6 +186,46 @@ client.on('interactionCreate', async interaction => {
 
             await interaction.editReply({ embeds: [embed] });
 
+        } catch (err) {
+            console.error(err);
+            await interaction.editReply('❌ Something went wrong.');
+        }
+    }
+
+    // /motd command
+    if (interaction.commandName === 'motd') {
+        const adminRoleIds = process.env.ADMIN_ROLE_IDS.split(',');
+        const hasRole = adminRoleIds.some(roleId => interaction.member.roles.cache.has(roleId));
+        if (!hasRole) {
+            await interaction.reply({ content: '❌ You do not have permission to use this command.', ephemeral: true });
+            return;
+        }
+
+        const message = interaction.options.getString('message');
+        await interaction.deferReply();
+
+        try {
+            const response = await fetch(
+                `https://${TITLE_ID}.playfabapi.com/Server/SetTitleData`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-SecretKey': SECRET_KEY
+                    },
+                    body: JSON.stringify({
+                        Key: 'MOTD',
+                        Value: message
+                    })
+                }
+            );
+
+            const data = await response.json();
+            if (data.code === 200) {
+                await interaction.editReply(`✅ **MOTD Updated!**\n> ${message}`);
+            } else {
+                await interaction.editReply('❌ Failed to update MOTD.');
+            }
         } catch (err) {
             console.error(err);
             await interaction.editReply('❌ Something went wrong.');
